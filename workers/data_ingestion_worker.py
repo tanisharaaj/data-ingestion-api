@@ -1,6 +1,12 @@
 import asyncio
-from temporalio.worker import Worker
+
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from temporal_client import get_temporal_client
+from temporalio.worker import Worker
+
 from workflows.data_ingestion_workflow import DataIngestionWorkflow, perform_db_operation
 
 async def main():
