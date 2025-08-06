@@ -27,6 +27,12 @@ async def perform_db_operation(payload: dict) -> str:
     try:
         with engine.begin() as conn:
             if operation == "insert":
+                # Remove 'id' if it's in the fields (SERIAL PK will auto-generate it)
+                fields.pop("id", None)
+
+                if not fields:
+                    raise ValueError("No fields provided for insert")
+
                 keys = ", ".join(fields.keys())
                 vals = ", ".join([f":{k}" for k in fields])
                 query = text(f"INSERT INTO {table} ({keys}) VALUES ({vals})")
@@ -35,6 +41,10 @@ async def perform_db_operation(payload: dict) -> str:
             elif operation == "update":
                 if not primary_key:
                     raise ValueError("Primary key required for update")
+
+                if not fields:
+                    raise ValueError("No fields provided for update")
+
                 set_clause = ", ".join([f"{k} = :{k}" for k in fields])
                 where_clause = " AND ".join([f"{k} = :pk_{k}" for k in primary_key])
                 params = {**fields, **{f"pk_{k}": v for k, v in primary_key.items()}}
@@ -44,6 +54,7 @@ async def perform_db_operation(payload: dict) -> str:
             elif operation == "delete":
                 if not primary_key:
                     raise ValueError("Primary key required for delete")
+
                 where_clause = " AND ".join([f"{k} = :{k}" for k in primary_key])
                 query = text(f"DELETE FROM {table} WHERE {where_clause}")
                 conn.execute(query, primary_key)
