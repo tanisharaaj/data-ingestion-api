@@ -4,6 +4,7 @@ import json
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routes import router as event_router  # adjust if your import is different
+from app.select_routes import router as select_router
 
 app = FastAPI(title="Universal Data Ingestion API")
 
@@ -21,3 +22,6 @@ app.add_middleware(
 
 # Include routes
 app.include_router(event_router)
+app.include_router(select_router)
+from app.crud_routes import router as crud_router
+app.include_router(crud_router)
