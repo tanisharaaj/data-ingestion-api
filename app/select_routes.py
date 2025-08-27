@@ -1,13 +1,10 @@
 # app/select_routes.py
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
-from sqlalchemy import Table, select, MetaData
-from sqlalchemy.exc import NoSuchTableError
-from sqlalchemy.orm import Session
-
-from app.db_engine import get_session
 from app.auth import verify_token
+from temporal_client import get_temporal_client
+import uuid
 
 router = APIRouter(prefix="/select", tags=["select"])
 
@@ -18,40 +15,36 @@ class SelectRequest(BaseModel):
     limit: Optional[int] = 100
     offset: Optional[int] = 0
 
-@router.post("", summary="Run a SELECT with a dynamic WHERE (equality only)")
-def dynamic_select(
+@router.post("", summary="Run a SELECT using Temporal workflow")
+async def select_via_temporal(
     req: SelectRequest,
     token=Depends(verify_token),
-    session: Session = Depends(get_session)
+    db: str = Query("default", description="Database key to select target DB"),
 ):
-    metadata = MetaData()
     try:
-        table_obj: Table = Table(req.table, metadata, autoload_with=session.bind)
-    except NoSuchTableError:
-        raise HTTPException(status_code=400, detail=f"Table '{req.table}' not found")
+        client = await get_temporal_client()
 
-    # Validate and resolve columns
-    if req.columns:
-        bad = [c for c in req.columns if c not in table_obj.c]
-        if bad:
-            raise HTTPException(status_code=400, detail=f"Invalid columns: {bad}")
-        cols = [table_obj.c[c] for c in req.columns]
-    else:
-        cols = list(table_obj.c)
+        # Assemble Temporal-friendly payload
+        payload = {
+            "operation": "select",
+            "table": req.table,
+            "fields": {
+                "columns": req.columns,
+                "filters": req.filters,
+                "limit": req.limit,
+                "offset": req.offset
+            }
+        }
 
-    # Build SELECT statement
-    stmt = select(*cols)
-    if req.filters:
-        for col, val in req.filters.items():
-            if col not in table_obj.c:
-                raise HTTPException(status_code=400, detail=f"Invalid filter column: {col}")
-            stmt = stmt.where(table_obj.c[col] == val)
+        handle = await client.start_workflow(
+            workflow="DataIngestionWorkflow",
+            id=f"select-workflow-{uuid.uuid4()}",
+            task_queue="data-ingestion-task-queue",
+            args=[payload, db],
+        )
 
-    if req.limit is not None:
-        stmt = stmt.limit(max(1, min(int(req.limit), 1000)))
-    if req.offset:
-        stmt = stmt.offset(max(0, int(req.offset)))
+        result = await handle.result()
+        return {"result": result, "workflow_id": handle.id}
 
-    # Run the query on the selected DB session
-    rows = [dict(r._mapping) for r in session.execute(stmt)]
-    return {"rows": rows}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
