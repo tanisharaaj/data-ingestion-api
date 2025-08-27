@@ -19,7 +19,7 @@ async def main():
         activities=[perform_db_operation],
     )
 
-    print("🚀 Worker is running and polling Temporal Cloud...")
+    print(" Worker is running and polling Temporal Cloud...")
     await worker.run()
 
 if __name__ == "__main__":

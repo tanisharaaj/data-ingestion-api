@@ -1,12 +1,13 @@
-
 # app/crud_routes.py
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional, List
-from sqlalchemy import Table, MetaData, select, insert, update, delete, text
+from sqlalchemy import Table, MetaData, select, insert, update, delete
 from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.engine import Result
-from app.db_engine import engine
+from sqlalchemy.orm import Session
+
+from app.db_engine import get_session
 from app.auth import verify_token
 
 router = APIRouter(prefix="/crud", tags=["crud"])
@@ -18,10 +19,10 @@ class CRUDRequest(BaseModel):
     filters: Optional[Dict[str, Any]] = None     # dynamic equality WHERE for update/delete/select
     columns: Optional[List[str]] = None          # for SELECT
 
-def _load_table(table_name: str) -> Table:
+def _load_table(table_name: str, session: Session) -> Table:
     metadata = MetaData()
     try:
-        return Table(table_name, metadata, autoload_with=engine)
+        return Table(table_name, metadata, autoload_with=session.bind)
     except NoSuchTableError:
         raise HTTPException(status_code=400, detail=f"Table '{table_name}' not found")
 
@@ -41,14 +42,16 @@ def _build_where(tbl: Table, filters: Optional[Dict[str, Any]]):
         if col not in tbl.c:
             raise HTTPException(status_code=400, detail=f"Invalid filter column: {col}")
         exprs.append(tbl.c[col] == val)
-    # AND all filters
     from sqlalchemy import and_
     return and_(*exprs) if exprs else None
 
 @router.post("", summary="INSERT, UPDATE, DELETE, or SELECT with dynamic equality WHERE")
-def run_crud(req: CRUDRequest, token=Depends(verify_token)):
-    tbl = _load_table(req.table)
-
+def run_crud(
+    req: CRUDRequest,
+    token=Depends(verify_token),
+    session: Session = Depends(get_session),
+):
+    tbl = _load_table(req.table, session)
     op = req.operation.upper()
 
     # SELECT
@@ -58,8 +61,7 @@ def run_crud(req: CRUDRequest, token=Depends(verify_token)):
         where_expr = _build_where(tbl, req.filters)
         if where_expr is not None:
             stmt = stmt.where(where_expr)
-        with engine.connect() as conn:
-            rows = [dict(r._mapping) for r in conn.execute(stmt)]
+        rows = [dict(r._mapping) for r in session.execute(stmt)]
         return {"rows": rows}
 
     # INSERT
@@ -70,20 +72,19 @@ def run_crud(req: CRUDRequest, token=Depends(verify_token)):
         if bad:
             raise HTTPException(status_code=400, detail=f"Unknown field(s): {bad}")
         stmt = insert(tbl).values(**req.fields)
-        # Try RETURNING * (works on PostgreSQL)
         try:
             stmt = stmt.returning(*list(tbl.c))
         except Exception:
             pass
-        with engine.begin() as conn:
-            res: Result = conn.execute(stmt)
-            try:
-                rows = [dict(r._mapping) for r in res]
-                if rows:
-                    return {"inserted": 1, "row": rows[0]}
-            except Exception:
-                pass
-            return {"inserted": res.rowcount or 1}
+        res: Result = session.execute(stmt)
+        session.commit()
+        try:
+            rows = [dict(r._mapping) for r in res]
+            if rows:
+                return {"inserted": 1, "row": rows[0]}
+        except Exception:
+            pass
+        return {"inserted": res.rowcount or 1}
 
     # UPDATE
     if op == "UPDATE":
@@ -100,13 +101,13 @@ def run_crud(req: CRUDRequest, token=Depends(verify_token)):
             stmt = stmt.returning(*list(tbl.c))
         except Exception:
             pass
-        with engine.begin() as conn:
-            res: Result = conn.execute(stmt)
-            try:
-                rows = [dict(r._mapping) for r in res]
-                return {"updated": len(rows), "rows": rows}
-            except Exception:
-                return {"updated": res.rowcount or 0}
+        res: Result = session.execute(stmt)
+        session.commit()
+        try:
+            rows = [dict(r._mapping) for r in res]
+            return {"updated": len(rows), "rows": rows}
+        except Exception:
+            return {"updated": res.rowcount or 0}
 
     # DELETE
     if op == "DELETE":
@@ -118,12 +119,13 @@ def run_crud(req: CRUDRequest, token=Depends(verify_token)):
             stmt = stmt.returning(*list(tbl.c))
         except Exception:
             pass
-        with engine.begin() as conn:
-            res: Result = conn.execute(stmt)
-            try:
-                rows = [dict(r._mapping) for r in res]
-                return {"deleted": len(rows), "rows": rows}
-            except Exception:
-                return {"deleted": res.rowcount or 0}
+        res: Result = session.execute(stmt)
+        session.commit()
+        try:
+            rows = [dict(r._mapping) for r in res]
+            return {"deleted": len(rows), "rows": rows}
+        except Exception:
+            return {"deleted": res.rowcount or 0}
 
+    # Unsupported op
     raise HTTPException(status_code=400, detail=f"Unsupported operation '{req.operation}'")

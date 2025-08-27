@@ -4,20 +4,26 @@ from datetime import timedelta
 @workflow.defn
 class DataIngestionWorkflow:
     @workflow.run
-    async def run(self, payload: dict) -> str:
-        workflow.logger.info(f"Starting data ingestion with: {payload}")
+    async def run(self, payload: dict, db_key: str) -> str:
+        workflow.logger.info(f"Starting data ingestion with: {payload}, DB: {db_key}")
         result = await workflow.execute_activity(
             perform_db_operation,
             payload,
+            db_key,  # ✅ pass db_key to activity
             schedule_to_close_timeout=timedelta(seconds=10),
         )
         return result
 
 
+
 @activity.defn
-async def perform_db_operation(payload: dict) -> str:
+async def perform_db_operation(payload: dict, db_key: str) -> str:
     from sqlalchemy import text
-    from app.db_engine import engine
+    from app.db_engine import SESSIONS
+
+    sessionmaker = SESSIONS.get(db_key)
+    if not sessionmaker:
+        raise ValueError(f"Unknown DB key: '{db_key}'")
 
     operation = payload.get("operation")
     table = payload.get("table")
@@ -25,7 +31,7 @@ async def perform_db_operation(payload: dict) -> str:
     primary_key = payload.get("primary_key", {})
 
     try:
-        with engine.begin() as conn:
+        with sessionmaker.begin() as conn:
             if operation == "insert":
                 # Remove 'id' if it's in the fields (SERIAL PK will auto-generate it)
                 fields.pop("id", None)
