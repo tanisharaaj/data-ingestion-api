@@ -1,8 +1,8 @@
 from temporalio import workflow, activity
-from temporalio.common import RetryPolicy  # Correct import
+from temporalio.common import RetryPolicy
 from datetime import timedelta, date, datetime
 from typing import Union
-
+import decimal  
 
 @workflow.defn
 class DataIngestionWorkflow:
@@ -15,7 +15,7 @@ class DataIngestionWorkflow:
             perform_db_operation,
             args=[payload, db_key],
             schedule_to_close_timeout=timedelta(minutes=2),
-            retry_policy=RetryPolicy(  # Correct usage
+            retry_policy=RetryPolicy(
                 initial_interval=timedelta(seconds=2),
                 backoff_coefficient=2.0,
                 maximum_interval=timedelta(seconds=20),
@@ -46,6 +46,8 @@ async def perform_db_operation(payload: dict, db_key: str) -> Union[str, list]:
         for key, value in row._mapping.items():
             if isinstance(value, (date, datetime)):
                 serialized[key] = value.isoformat()
+            elif isinstance(value, decimal.Decimal):  # Fix for Decimal
+                serialized[key] = float(value)  # or str(value) if preferred
             else:
                 serialized[key] = value
         return serialized
@@ -97,7 +99,7 @@ async def perform_db_operation(payload: dict, db_key: str) -> Union[str, list]:
 
                 result = conn.execute(text(query), filters)
                 rows = [serialize_row(r) for r in result]
-                return rows  # Now safely serializable
+                return rows  # Fully JSON serializable now
 
             else:
                 raise ValueError(f"Unsupported operation '{operation}'")
