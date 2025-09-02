@@ -1,4 +1,3 @@
-# app/select_routes.py
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
@@ -24,16 +23,13 @@ async def select_via_temporal(
     try:
         client = await get_temporal_client()
 
-        # Assemble Temporal-friendly payload
         payload = {
             "operation": "select",
             "table": req.table,
-            "fields": {
-                "columns": req.columns,
-                "filters": req.filters,
-                "limit": req.limit,
-                "offset": req.offset
-            }
+            "columns": req.columns or [],
+            "filters": req.filters or {},
+            "limit": req.limit,
+            "offset": req.offset
         }
 
         handle = await client.start_workflow(

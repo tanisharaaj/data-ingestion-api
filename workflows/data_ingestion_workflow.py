@@ -1,17 +1,27 @@
 from temporalio import workflow, activity
-from datetime import timedelta
+from temporalio.common import RetryPolicy  # Correct import
+from datetime import timedelta, date, datetime
 from typing import Union
+
 
 @workflow.defn
 class DataIngestionWorkflow:
     @workflow.run
     async def run(self, payload: dict, db_key: str) -> Union[str, list]:
+        db_key = db_key.strip()
         workflow.logger.info(f"Starting data ingestion with: {payload}, DB: {db_key}")
 
         result = await workflow.execute_activity(
             perform_db_operation,
             args=[payload, db_key],
-            schedule_to_close_timeout=timedelta(seconds=10),
+            schedule_to_close_timeout=timedelta(minutes=2),
+            retry_policy=RetryPolicy(  # Correct usage
+                initial_interval=timedelta(seconds=2),
+                backoff_coefficient=2.0,
+                maximum_interval=timedelta(seconds=20),
+                maximum_attempts=5,
+                non_retryable_error_types=["ValidationError"]
+            ),
         )
         return result
 
@@ -21,20 +31,29 @@ async def perform_db_operation(payload: dict, db_key: str) -> Union[str, list]:
     from sqlalchemy import text
     from app.db_engine import SESSIONS
 
-    sessionmaker = SESSIONS.get(db_key)
+    sessionmaker = SESSIONS.get(db_key.strip())
     if not sessionmaker:
         raise ValueError(f"Unknown DB key: '{db_key}'")
 
     operation = payload.get("operation")
     table = payload.get("table")
-    fields = payload.get("fields", {})
     filters = payload.get("filters", {})
     columns = payload.get("columns", [])
     primary_key = payload.get("primary_key", {})
 
+    def serialize_row(row):
+        serialized = {}
+        for key, value in row._mapping.items():
+            if isinstance(value, (date, datetime)):
+                serialized[key] = value.isoformat()
+            else:
+                serialized[key] = value
+        return serialized
+
     try:
         with sessionmaker.begin() as conn:
             if operation == "insert":
+                fields = payload.get("fields", {})
                 fields.pop("id", None)
                 if not fields:
                     raise ValueError("No fields provided for insert")
@@ -45,6 +64,7 @@ async def perform_db_operation(payload: dict, db_key: str) -> Union[str, list]:
                 return f"Insert operation completed on {table}"
 
             elif operation == "update":
+                fields = payload.get("fields", {})
                 if not primary_key:
                     raise ValueError("Primary key required for update")
                 if not fields:
@@ -70,9 +90,14 @@ async def perform_db_operation(payload: dict, db_key: str) -> Union[str, list]:
                 if filters:
                     where_clause = " AND ".join([f"{k} = :{k}" for k in filters])
                     query += f" WHERE {where_clause}"
+
+                print(f"[DEBUG] Final SELECT Query: {query}")
+                print(f"[DEBUG] Filters being used: {filters}")
+                print(f"[DEBUG] Columns requested: {columns}")
+
                 result = conn.execute(text(query), filters)
-                rows = [dict(r._mapping) for r in result]
-                return rows  # list of dicts
+                rows = [serialize_row(r) for r in result]
+                return rows  # Now safely serializable
 
             else:
                 raise ValueError(f"Unsupported operation '{operation}'")
